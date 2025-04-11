@@ -1,0 +1,119 @@
+name: Terraform Lifecycle CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  TF_VERSION: latest
+  WORKING_DIRECTORY: 'terraform'
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  terraform-lifecycle:
+    name: Terraform Lifecycle
+    runs-on: ubuntu-latest
+
+    steps:
+      # Pre-build: Checkout and AWS setup
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Terraform Setup
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      # Terraform Lifecycle - Init & Validate (always runs)
+      - name: Terraform Init
+        id: init
+        run: |
+          echo "::group::Terraform Init"
+          terraform init -input=false
+          echo "::endgroup::"
+          echo "TF_INIT_OUTPUT<<EOF" >> $GITHUB_ENV
+          terraform init -input=false >> $GITHUB_ENV 2>&1
+          echo "EOF" >> $GITHUB_ENV
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Validate
+        id: validate
+        run: |
+          echo "::group::Terraform Validate"
+          terraform validate -no-color
+          echo "::endgroup::"
+          echo "TF_VALIDATE_OUTPUT<<EOF" >> $GITHUB_ENV
+          terraform validate -no-color >> $GITHUB_ENV 2>&1
+          echo "EOF" >> $GITHUB_ENV
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      # PR-specific: Plan and comment
+      - name: Terraform Plan
+        id: plan
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "::group::Terraform Plan"
+          terraform plan -no-color -input=false -out=tfplan
+          echo "::endgroup::"
+          echo "TF_PLAN_OUTPUT<<EOF" >> $GITHUB_ENV
+          terraform plan -no-color -input=false >> $GITHUB_ENV 2>&1
+          echo "EOF" >> $GITHUB_ENV
+        working-directory: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Upload Plan Artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v3
+        with:
+          name: tfplan
+          path: ${{ env.WORKING_DIRECTORY }}/tfplan
+
+      - name: Create PR Comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `## Terraform Lifecycle Results
+            ### Init Output
+            \`\`\`
+            ${process.env.TF_INIT_OUTPUT}
+            \`\`\`
+            ### Validate Output
+            \`\`\`
+            ${process.env.TF_VALIDATE_OUTPUT}
+            \`\`\`
+            ### Plan Output
+            \`\`\`
+            ${process.env.TF_PLAN_OUTPUT}
+            \`\`\`
+            *View the full workflow run for details*`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      # Merge-specific: Apply
+      - name: Download Plan Artifact
+        if: github.event_name == 'push'
+        uses: actions/download-artifact@v3
+        with:
+          name: tfplan
+          path: ${{ env.WORKING_DIRECTORY }}
+
+      - name: Terraform Apply
+        if: github.event_name == 'push'
+        run: terraform apply -input=false tfplan
+        working-directory: ${{ env.WORKING_DIRECTORY }}
