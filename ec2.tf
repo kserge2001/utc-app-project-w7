@@ -7,6 +7,6 @@ resource "aws_instance" "server1" {
   key_name      = aws_key_pair.aws_key.key_name
   user_data     = file("server.sh")
   tags ={
-    Name = "utc-app-inst"
+    Name = "1utc-app-inst"
   }
 }
